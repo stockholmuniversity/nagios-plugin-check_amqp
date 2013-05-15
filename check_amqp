@@ -1,0 +1,140 @@
+#!/usr/bin/env python
+# vim: set fileencoding=utf-8
+# Copyright (c) 2013-, Simon Lundström <simlu@su.se>, IT Services, Stockholm University
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# Redistributions of source code must retain the above copyright notice, this
+# list of conditions and the following disclaimer.
+#
+# Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+#
+# Neither the name of Stockholm University nor the names of its contributors
+# may be used to endorse or promote products derived from this software without
+# specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+import re
+import os.path
+import pika
+import time
+from ssl import CERT_REQUIRED
+from pynag.Plugins import PluginHelper,ok,warning,critical,unknown
+from ConfigParser import ConfigParser
+from ConfigParser import Error as ConfigParserError
+
+## Create the plugin option
+np = PluginHelper()
+
+## Command line arguments
+np.parser.add_option("-o","--extra-opts", help="Config file, e.g. rabbitmqadmin.conf, to use")
+np.parser.add_option("-H","--hostname", help="Hostname to connect to")
+np.parser.add_option("-u","--username", help="Username to connect with")
+np.parser.add_option("-p","--password", help="Password to connect with")
+np.parser.add_option("-P","--port", help="Port to connect with", type="int")
+np.parser.add_option("-s","--ssl", help="Use SSL when connecting", default=False, action="store_true")
+np.parser.add_option("-c","--cafile", help="CA to verify against when using SSL")
+
+np.parse_arguments()
+
+# Santiy checks
+
+# Change the port if not set and we're using SSL
+if np.options.ssl and not np.options.port:
+  np.options.port = 5671
+
+# Parse extra_opts file
+if np.options.extra_opts:
+  extra_opts = re.search("^(.*?)@(.*)$", np.options.extra_opts)
+  if not extra_opts:
+    np.exit(exit_code=critical, summary="Couldn't parse extra-opts, format should be 'section@/the/config/file.conf'")
+  np.options.node = extra_opts.group(1)
+  np.options.config = extra_opts.group(2)
+  if not os.path.isfile(np.options.config):
+    np.exit(exit_code=critical, summary="Couldn't find config file '%s'" % (np.options.config))
+  config = ConfigParser()
+  try:
+    config.read(np.options.config)
+    new_conf = dict(config.items(np.options.node))
+    # Fugly hack, needs extra-opts see:
+    # <https://github.com/pynag/pynag/issues/54>
+    if new_conf['hostname'] and not np.options.hostname:
+      np.options.hostname = new_conf['hostname']
+
+    if new_conf['username'] and not np.options.username:
+      np.options.username = new_conf['username']
+
+    if new_conf['password'] and not np.options.password:
+      np.options.password = new_conf['password']
+
+    if new_conf['port'] and not np.options.port:
+      np.options.port = int(new_conf['port'])
+
+    if new_conf['ssl'] and not np.options.ssl:
+      np.options.ssl = bool(new_conf['ssl'])
+
+  except ConfigParserError, error:
+    np.exit(exit_code=critical, summary="Could not read section '%s' in config file '%s':\n   %s" % (np.options.node, np.options.config, error))
+
+# Ensure we have a CAfile if SSL is enabled (and that it exists)
+if np.options.ssl and (not np.options.cafile or not os.path.isfile(np.options.cafile)):
+    np.exit(exit_code=critical, summary="SSL is enabled but option 'cafile' wasn't set or it doesn't exist (%s)" % (np.options.cafile))
+
+ssl_options = {
+  "ca_certs": np.options.cafile,
+  "cert_reqs": CERT_REQUIRED,
+}
+
+try:
+  credentials = pika.PlainCredentials(
+    np.options.username,
+    np.options.password
+  )
+
+  connection = pika.BlockingConnection(
+    pika.ConnectionParameters(
+      host=np.options.hostname,
+      port=np.options.port,
+      ssl=np.options.ssl,
+      ssl_options=ssl_options,
+      credentials=credentials
+    )
+  )
+  queue = 'aliveness-test'
+  message = 'test_message'
+  channel = connection.channel()
+
+  channel.queue_declare(queue=queue, auto_delete=False)
+  # When publishing to no exchange it by default goes to a queue with the same
+  # name as the routing key (if it exists).
+  channel.basic_publish(exchange='', routing_key=queue, body=message)
+
+  # Get one message from the queue
+  method_frame, header_frame, body = channel.basic_get(queue=queue, no_ack=True)
+  if method_frame:
+    np.add_status(ok)
+    np.add_summary("Received message %r" % (body))
+  else:
+    np.add_status(critical)
+    np.add_summary("Got no message! method_frame: %r header_frame: %r" % (method_frame, header_frame))
+    connection.close()
+except Exception, e:
+  np.add_summary('ERROR: %s: %r' % (e.__class__.__name__, e))
+  np.add_status(critical)
+
+np.exit()

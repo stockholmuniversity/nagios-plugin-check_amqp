@@ -132,7 +132,7 @@ try:
   else:
     np.add_status(critical)
     np.add_summary("Got no message! method_frame: %r header_frame: %r" % (method_frame, header_frame))
-    connection.close()
+  connection.close()
 except Exception, e:
   np.add_summary('ERROR: %s: %r' % (e.__class__.__name__, e))
   np.add_status(critical)

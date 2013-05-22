@@ -93,7 +93,7 @@ if np.options.extra_opts:
 
 # Ensure we have a CAfile if SSL is enabled (and that it exists)
 if np.options.ssl and (not np.options.cafile or not os.path.isfile(np.options.cafile)):
-    np.exit(exit_code=critical, summary="SSL is enabled but option 'cafile' wasn't set or it doesn't exist (%s)" % (np.options.cafile))
+  np.exit(exit_code=critical, summary="SSL is enabled but option 'cafile' wasn't set or it doesn't exist (%s)" % (np.options.cafile))
 
 ssl_options = {
   "ca_certs": np.options.cafile,

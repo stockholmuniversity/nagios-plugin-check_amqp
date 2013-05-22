@@ -95,6 +95,11 @@ if np.options.extra_opts:
 if np.options.ssl and (not np.options.cafile or not os.path.isfile(np.options.cafile)):
   np.exit(exit_code=critical, summary="SSL is enabled but option 'cafile' wasn't set or it doesn't exist (%s)" % (np.options.cafile))
 
+# Ensure we have a hostname, username and password
+if not np.options.hostname or not np.options.username or not np.options.password:
+  np.parser.print_help()
+  np.exit(exit_code=critical, summary="ERROR: Hostname, username and password are REQUIRED.")
+
 ssl_options = {
   "ca_certs": np.options.cafile,
   "cert_reqs": CERT_REQUIRED,
